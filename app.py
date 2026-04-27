@@ -1,4 +1,7 @@
 import os
+import json
+import numpy as np
+from docx import Document
 from openai import OpenAI
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -18,6 +21,7 @@ app.add_middleware(
 # 模型配置
 QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 QWEN_CHAT_MODEL = "qwen-plus"
+QWEN_EMBEDDING_MODEL = "text-embedding-v4"
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 DEEPSEEK_CHAT_MODEL = "deepseek-chat"
@@ -42,6 +46,46 @@ deepseek_client = OpenAI(
     base_url=DEEPSEEK_BASE_URL,
 )
 
+# 知识库检索功能
+def get_embedding(text, model=QWEN_EMBEDDING_MODEL):
+    response = qwen_client.embeddings.create(
+        model=model,
+        input=text,
+    )
+    return response.data[0].embedding
+
+def cosine_similarity(vector_a, vector_b):
+    vector_a = np.array(vector_a)
+    vector_b = np.array(vector_b)
+    return np.dot(vector_a, vector_b) / (
+        np.linalg.norm(vector_a) * np.linalg.norm(vector_b)
+    )
+
+def search_knowledge_base(query, knowledge_base_path="knowledge_base.json", top_k=3):
+    """检索知识库"""
+    try:
+        # 加载知识库
+        with open(knowledge_base_path, "r", encoding="utf-8") as f:
+            knowledge_base = json.load(f)
+        
+        # 获取查询向量
+        query_embedding = get_embedding(query)
+        
+        # 计算相似度
+        similarities = []
+        for item in knowledge_base:
+            sim = cosine_similarity(query_embedding, item["embedding"])
+            similarities.append((sim, item["text"], item["id"]))
+        
+        # 排序并返回前k个
+        similarities.sort(reverse=True, key=lambda x: x[0])
+        top_items = similarities[:top_k]
+        
+        return top_items
+    except Exception as e:
+        print(f"知识库检索错误: {e}")
+        return []
+
 
 @app.get("/")
 async def read_root():
@@ -59,6 +103,17 @@ async def chat(request: Request):
         return {"error": "消息不能为空"}
 
     try:
+        # 检索知识库
+        knowledge_results = search_knowledge_base(user_message)
+        
+        # 构建知识库上下文
+        knowledge_context = ""
+        if knowledge_results:
+            knowledge_context = "根据产品说明书的相关信息：\n"
+            for i, (sim, text, _) in enumerate(knowledge_results):
+                if sim > 0.5:  # 只使用相似度高于0.5的结果
+                    knowledge_context += f"{i+1}. {text}\n\n"
+        
         # 构建对话历史
         chat_messages = []
         for msg in messages:
@@ -67,18 +122,24 @@ async def chat(request: Request):
                 "content": msg["content"]
             })
         
-        # 添加系统提示
+        # 添加系统提示和知识库上下文
         if model == "qwen":
+            system_prompt = "你是家护家电产品的智能客服，根据产品说明书回答用户问题。"
+            if knowledge_context:
+                system_prompt += "\n\n" + knowledge_context
             chat_messages.insert(0, {
                 "role": "system",
-                "content": "你是自然语言处理课程助教，回答要准确、简洁。",
+                "content": system_prompt,
             })
             client = qwen_client
             model_name = QWEN_CHAT_MODEL
         else:
+            system_prompt = "你是家护家电产品的智能客服，根据产品说明书回答用户问题。"
+            if knowledge_context:
+                system_prompt += "\n\n" + knowledge_context
             chat_messages.insert(0, {
                 "role": "system",
-                "content": "你是自然语言处理课程助教，回答要准确、简洁。",
+                "content": system_prompt,
             })
             client = deepseek_client
             model_name = DEEPSEEK_CHAT_MODEL
@@ -95,6 +156,6 @@ async def chat(request: Request):
             temperature=0.3,
         )
         answer = completion.choices[0].message.content
-        return {"answer": answer}
+        return {"answer": answer, "knowledge_used": bool(knowledge_context)}
     except Exception as e:
         return {"error": str(e)}
