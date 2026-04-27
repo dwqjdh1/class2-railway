@@ -76,6 +76,19 @@ def load_knowledge():
     print(f"加载的知识库片段: {chunks}")
     return chunks
 
+# 初始化知识库向量
+def init_knowledge_vectors():
+    """初始化知识库向量"""
+    global chunk_vectors
+    if chunks:
+        chunk_vectors = get_embeddings(chunks)
+        if chunk_vectors:
+            print(f"向量维度: {len(chunk_vectors[0])}")
+        else:
+            print("生成向量失败")
+    else:
+        print("知识库为空，无法生成向量")
+
 # 获取文本的嵌入向量
 def get_embeddings(texts):
     """获取文本的嵌入向量"""
@@ -182,12 +195,7 @@ if KNOWLEDGE_FILE.exists():
     print(f"知识库片段数量: {len(chunks)}")
     
     # 生成知识库向量
-    global chunk_vectors
-    chunk_vectors = get_embeddings(chunks)
-    if chunk_vectors:
-        print(f"向量维度: {len(chunk_vectors[0])}")
-    else:
-        print("生成向量失败")
+    init_knowledge_vectors()
 else:
     print(f"知识库文件不存在: {KNOWLEDGE_FILE}")
 
