@@ -1,64 +1,101 @@
 import os
-import dashscope
+from openai import OpenAI
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# 挂载静态文件
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# 根路径返回前端页面
+# 模型配置
+QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+QWEN_CHAT_MODEL = "qwen-plus"
+
+DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+DEEPSEEK_CHAT_MODEL = "deepseek-chat"
+
+# API Key 配置
+api_key = os.getenv("DASHSCOPE_API_KEY")
+if not api_key:
+    api_key = "sk-dc4d54e3c1ba4558be3e4fabcea7669e"
+
+deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
+if not deepseek_api_key:
+    deepseek_api_key = "sk-5e5da217bc7247119fff4c5cc7ddd8cd"
+
+# 客户端配置
+qwen_client = OpenAI(
+    api_key=api_key,
+    base_url=QWEN_BASE_URL,
+)
+
+deepseek_client = OpenAI(
+    api_key=deepseek_api_key,
+    base_url=DEEPSEEK_BASE_URL,
+)
+
+
 @app.get("/")
-async def root():
-    return app.send_file("static/index.html")
+async def read_root():
+    return FileResponse("static/index.html")
 
-# 聊天接口
+
 @app.post("/chat")
 async def chat(request: Request):
+    data = await request.json()
+    user_message = data.get("message", "")
+    model = data.get("model", "qwen")
+    messages = data.get("messages", [])
+
+    if not user_message:
+        return {"error": "消息不能为空"}
+
     try:
-        # 获取请求数据
-        data = await request.json()
-        message = data.get("message", "")
+        # 构建对话历史
+        chat_messages = []
+        for msg in messages:
+            chat_messages.append({
+                "role": msg["role"],
+                "content": msg["content"]
+            })
         
-        if not message:
-            return JSONResponse({"error": "请输入消息"})
+        # 添加系统提示
+        if model == "qwen":
+            chat_messages.insert(0, {
+                "role": "system",
+                "content": "你是自然语言处理课程助教，回答要准确、简洁。",
+            })
+            client = qwen_client
+            model_name = QWEN_CHAT_MODEL
+        else:
+            chat_messages.insert(0, {
+                "role": "system",
+                "content": "你是自然语言处理课程助教，回答要准确、简洁。",
+            })
+            client = deepseek_client
+            model_name = DEEPSEEK_CHAT_MODEL
         
-        # 设置API Key
-        api_key = os.getenv("DASHSCOPE_API_KEY")
-        if not api_key:
-            return JSONResponse({"error": "没有读取到环境变量 DASHSCOPE_API_KEY。请在 Railway Variables 中配置它。"})
-        
-        dashscope.api_key = api_key
-        
-        # 调用千问大模型
-        response = dashscope.Generation.call(
-            model="qwen-plus",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "你是智能客服助手，回答要准确、简洁、友好。",
-                },
-                {
-                    "role": "user",
-                    "content": message,
-                },
-            ],
+        # 添加当前用户消息
+        chat_messages.append({
+            "role": "user",
+            "content": user_message,
+        })
+
+        completion = client.chat.completions.create(
+            model=model_name,
+            messages=chat_messages,
             temperature=0.3,
         )
-        
-        # 处理响应
-        if response.status_code == 200:
-            answer = response.output.text
-            return JSONResponse({"answer": answer})
-        else:
-            return JSONResponse({"error": f"调用失败: {response.status_code}, {response.message}"})
-    
+        answer = completion.choices[0].message.content
+        return {"answer": answer}
     except Exception as e:
-        return JSONResponse({"error": f"发生错误: {str(e)}"})
+        return {"error": str(e)}
 
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
