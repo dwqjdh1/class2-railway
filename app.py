@@ -46,7 +46,7 @@ deepseek_client = OpenAI(
 )
 
 # RAG相关功能
-KNOWLEDGE_FILE = Path("customer-service-bot/knowledge.txt")
+KNOWLEDGE_FILE = Path(__file__).parent / "customer-service-bot" / "knowledge.txt"
 
 # 全局变量，用于存储知识库和向量
 chunks = []
@@ -57,10 +57,22 @@ def load_knowledge():
     """加载知识库并切分成片段"""
     text = KNOWLEDGE_FILE.read_text(encoding="utf-8")
     chunks = []
-    for block in text.split("\n\n"):
-        chunk = block.strip()
-        if chunk:
-            chunks.append(chunk)
+    # 按照标题和内容切分
+    lines = text.strip().split('\n')
+    current_chunk = []
+    for line in lines:
+        line = line.strip()
+        if line.startswith('【') and line.endswith('】'):
+            if current_chunk:
+                chunks.append('\n'.join(current_chunk))
+                current_chunk = []
+            current_chunk.append(line)
+        else:
+            if line:
+                current_chunk.append(line)
+    if current_chunk:
+        chunks.append('\n'.join(current_chunk))
+    print(f"加载的知识库片段: {chunks}")
     return chunks
 
 # 获取文本的嵌入向量
@@ -107,6 +119,8 @@ def search_knowledge(query, top_k=3):
         scored_chunks.append((float(score), chunk))
     
     scored_chunks.sort(reverse=True, key=lambda item: item[0])
+    print(f"查询: {query}")
+    print(f"搜索结果: {scored_chunks}")
     return scored_chunks[:top_k]
 
 # 使用大模型基于检索结果回答问题
@@ -115,7 +129,7 @@ def answer_with_rag(query, search_results):
     # 构建上下文
     context_parts = []
     for index, (score, chunk) in enumerate(search_results, start=1):
-        context_parts.append(f"[资料{index}，相似度 {score:.4f}]\n{chunk}")
+        context_parts.append(f"[资料{index}]\n{chunk}")
     
     context = "\n\n".join(context_parts)
     
@@ -128,20 +142,22 @@ def answer_with_rag(query, search_results):
     
     # 调用大模型
     system_prompt = """
-你是企业智能客服。
-你必须根据企业知识库资料回答用户问题。
-如果资料中没有答案，请说明"知识库中暂未找到相关信息，需要人工客服进一步处理"。
-回答要礼貌、简洁、专业，不要编造资料中没有的信息。
+你是企业智能客服，专门回答用户关于星河科技有限公司产品和服务的问题。
+请严格按照以下要求回答：
+1. 只根据提供的企业知识库资料回答问题
+2. 回答要直接、准确，不要添加任何引言或开场白
+3. 如果资料中没有相关信息，明确说明"知识库中暂未找到相关信息，需要人工客服进一步处理"
+4. 使用简洁专业的语言
 """
     
     user_prompt = f"""
-请根据下面的企业知识库资料回答用户问题。
-
 企业知识库资料：
 {context}
 
 用户问题：
 {query}
+
+请根据上述资料回答用户问题，直接给出答案，不要有任何引言。
 """
     
     response = dashscope.Generation.call(
@@ -150,7 +166,8 @@ def answer_with_rag(query, search_results):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        temperature=0.2,
+        temperature=0.1,
+        top_p=0.9,
     )
     
     if response.status_code == 200:
@@ -241,9 +258,12 @@ async def rag(request: Request):
     try:
         # 检索相关知识
         search_results = search_knowledge(user_message)
+        print(f"搜索结果: {search_results}")
         
         # 生成回答
         answer = answer_with_rag(user_message, search_results)
+        print(f"用户问题: {user_message}")
+        print(f"生成回答: {answer}")
         
         # 准备返回结果
         result = {
@@ -254,5 +274,6 @@ async def rag(request: Request):
         }
         return result
     except Exception as e:
+        print(f"错误: {str(e)}")
         return {"error": str(e)}
 
