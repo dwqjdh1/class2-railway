@@ -178,11 +178,11 @@ def answer_with_rag(query, search_results):
 
 # 初始化知识库
 if KNOWLEDGE_FILE.exists():
-    global chunks, chunk_vectors
     load_knowledge()  # 直接调用，函数内部会更新全局变量chunks
     print(f"知识库片段数量: {len(chunks)}")
     
     # 生成知识库向量
+    global chunk_vectors
     chunk_vectors = get_embeddings(chunks)
     if chunk_vectors:
         print(f"向量维度: {len(chunk_vectors[0])}")
